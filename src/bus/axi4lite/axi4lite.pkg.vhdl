@@ -194,26 +194,28 @@ package axi4lite is
 	function normalize(Config : T_AXI4_Register_Vector) return T_AXI4_Register_Vector;
 
 	--------Special Register Configurations--------
-	constant Atomic_RegisterDescription_Vector : T_AXI4_Register_Vector(0 to 3);
+	subtype  T_Atomic_RegisterDescription_Vector is T_AXI4_Register_Vector(0 to 3);
+	constant Atomic_RegisterDescription_Vector : T_Atomic_RegisterDescription_Vector;
 
 	procedure Create_AtomicRegister(
 		constant Reset                     : in  std_logic;
-		constant RegisterFile_ReadPort     : in  T_SLVV(Atomic_RegisterDescription_Vector'range)(DATA_BITS - 1 downto 0);
-		signal RegisterFile_WritePort      : out T_SLVV(Atomic_RegisterDescription_Vector'range)(DATA_BITS - 1 downto 0);
-		constant RegisterFile_ReadPort_hit : in  std_logic_vector(Atomic_RegisterDescription_Vector'range);
+		constant RegisterFile_ReadPort     : in  T_SLVV(T_Atomic_RegisterDescription_Vector'range)(DATA_BITS - 1 downto 0);
+		signal RegisterFile_WritePort      : out T_SLVV(T_Atomic_RegisterDescription_Vector'range)(DATA_BITS - 1 downto 0);
+		constant RegisterFile_ReadPort_hit : in  std_logic_vector(T_Atomic_RegisterDescription_Vector'range);
 		constant PL_WriteValue             : in  std_logic_vector(DATA_BITS - 1 downto 0) := (others => '0');
 		constant PL_WriteStrobe            : in  std_logic                                 := '0';
 		constant Value_reg                 : in  std_logic_vector(DATA_BITS - 1 downto 0); -- make this signal as `<= nextValue_reg when rising_edge(Clock);`
 		signal nextValue_reg               : out std_logic_vector(DATA_BITS - 1 downto 0)
 	);
 
-	constant IO_RegisterDescription_Vector : T_AXI4_Register_Vector(0 to 7);
+	subtype T_IO_RegisterDescription_Vector is T_AXI4_Register_Vector(0 to 7);
+	constant IO_RegisterDescription_Vector : T_IO_RegisterDescription_Vector;
 
 	procedure Create_IORegister(
 		constant Reset                     : in  std_logic;
-		constant RegisterFile_ReadPort     : in  T_SLVV(IO_RegisterDescription_Vector'range)(DATA_BITS - 1 downto 0);
-		signal RegisterFile_WritePort      : out T_SLVV(IO_RegisterDescription_Vector'range)(DATA_BITS - 1 downto 0);
-		constant RegisterFile_ReadPort_hit : in  std_logic_vector(IO_RegisterDescription_Vector'range);
+		constant RegisterFile_ReadPort     : in  T_SLVV(T_IO_RegisterDescription_Vector'range)(DATA_BITS - 1 downto 0);
+		signal RegisterFile_WritePort      : out T_SLVV(T_IO_RegisterDescription_Vector'range)(DATA_BITS - 1 downto 0);
+		constant RegisterFile_ReadPort_hit : in  std_logic_vector(T_IO_RegisterDescription_Vector'range);
 		constant Input                     : in  std_logic_vector(DATA_BITS - 1 downto 0);
 		signal Output                      : out std_logic_vector(DATA_BITS - 1 downto 0);
 		signal Tristate                    : out std_logic_vector(DATA_BITS - 1 downto 0);
@@ -785,9 +787,9 @@ package body axi4lite is
 	procedure Create_AtomicRegister(
 		--    signal   Clock                     : in  std_logic;
 		constant Reset                     : in  std_logic;
-		constant RegisterFile_ReadPort     : in  T_SLVV(Atomic_RegisterDescription_Vector'range)(DATA_BITS - 1 downto 0);
-		signal RegisterFile_WritePort      : out T_SLVV(Atomic_RegisterDescription_Vector'range)(DATA_BITS - 1 downto 0);
-		constant RegisterFile_ReadPort_hit : in  std_logic_vector(Atomic_RegisterDescription_Vector'range);
+		constant RegisterFile_ReadPort     : in  T_SLVV(T_Atomic_RegisterDescription_Vector'range)(DATA_BITS - 1 downto 0);
+		signal RegisterFile_WritePort      : out T_SLVV(T_Atomic_RegisterDescription_Vector'range)(DATA_BITS - 1 downto 0);
+		constant RegisterFile_ReadPort_hit : in  std_logic_vector(T_Atomic_RegisterDescription_Vector'range);
 		constant PL_WriteValue             : in  std_logic_vector(DATA_BITS - 1 downto 0) := (others => '0');
 		constant PL_WriteStrobe            : in  std_logic                                 := '0';
 		constant Value_reg                 : in  std_logic_vector(DATA_BITS - 1 downto 0);
@@ -823,9 +825,9 @@ package body axi4lite is
 	procedure Create_IORegister(
 		--    signal Clock                     : in  std_logic;
 		constant Reset                     : in  std_logic;
-		constant RegisterFile_ReadPort     : in  T_SLVV(IO_RegisterDescription_Vector'range)(DATA_BITS - 1 downto 0);
-		signal RegisterFile_WritePort      : out T_SLVV(IO_RegisterDescription_Vector'range)(DATA_BITS - 1 downto 0);
-		constant RegisterFile_ReadPort_hit : in  std_logic_vector(IO_RegisterDescription_Vector'range);
+		constant RegisterFile_ReadPort     : in  T_SLVV(T_IO_RegisterDescription_Vector'range)(DATA_BITS - 1 downto 0);
+		signal RegisterFile_WritePort      : out T_SLVV(T_IO_RegisterDescription_Vector'range)(DATA_BITS - 1 downto 0);
+		constant RegisterFile_ReadPort_hit : in  std_logic_vector(T_IO_RegisterDescription_Vector'range);
 		constant Input                     : in  std_logic_vector(DATA_BITS - 1 downto 0);
 		signal Output                      : out std_logic_vector(DATA_BITS - 1 downto 0);
 		signal Tristate                    : out std_logic_vector(DATA_BITS - 1 downto 0);
@@ -857,14 +859,14 @@ package body axi4lite is
 	end procedure;
 
 	--------------INIT
-	constant Atomic_RegisterDescription_Vector : T_AXI4_Register_Vector(0 to 3) := (
+	constant Atomic_RegisterDescription_Vector : T_Atomic_RegisterDescription_Vector := (
 		0 => to_AXI4_Register("ATOMIC_Value", to_unsigned(0, 32), ReadWrite_NotRegistered),
 		1 => to_AXI4_Register("ATOMIC_BitTgl", to_unsigned(4, 32), ReadWrite_NotRegistered),
 		2 => to_AXI4_Register("ATOMIC_BitSet", to_unsigned(8, 32), ReadWrite_NotRegistered),
 		3 => to_AXI4_Register("ATOMIC_BitClr", to_unsigned(12, 32), ReadWrite_NotRegistered)
 	);
 
-	constant IO_RegisterDescription_Vector : T_AXI4_Register_Vector(0 to 7) := (
+	constant IO_RegisterDescription_Vector : T_IO_RegisterDescription_Vector := (
 		add_Prefix("IO.", Atomic_RegisterDescription_Vector, to_unsigned(0, ADDRESS_BITS)) &
 		add_Prefix("T.", Atomic_RegisterDescription_Vector, to_unsigned(Atomic_RegisterDescription_Vector'length * 4, ADDRESS_BITS))
 	);
