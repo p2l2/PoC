@@ -28,5 +28,6 @@ analyze axi4_Mux_TestHarness.vhdl
 
 # Test cases
 RunTest TC_SimpleReadWrite.vhdl [generic TRANSACTIONS 1]
+RunTest TC_SimpleReadOutOfOrder.vhdl
 RunTest TC_SimpleReadWrite_multiID.vhdl
 RunTest TC_SimpleReadWrite_multiID_randDelay.vhdl
