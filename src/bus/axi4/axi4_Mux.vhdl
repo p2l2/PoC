@@ -7,14 +7,13 @@
 -- -------------------------------------
 -- The module provides a multiplexing function between generic
 -- AXI4 channel to one AXI4 channel.
--- Note that this module terminates ID's on the input and genrates new ID's for
--- every output-port. On response reception, the response is forwarded with the
--- original ID to the manager. The number of read and write ID's is defined by
--- NUM_OUTSTANDING_READS and NUM_OUTSTANDING_WRITES, where the ID's from
--- 0 to NUM_OUTSTANDING_* -1 are generated.
--- The subordinate must support the given number of ID's to work. Leave
--- NUM_OUTSTANDING_* at init value 0 to generate ID's of the full ID-width
--- (2**ID-width).
+-- The output ID of a transaction is the input port number concatenated with
+-- its input ID (port & ID), so the output ID has to be at least
+-- log2(ports) bits wider than the input ID. A response is routed back by the
+-- port bits of its ID and forwarded with the input ID. Transactions of one
+-- port with one ID keep one output ID, so the subordinate's ordering rules
+-- for an ID hold per port as well. Nothing limits the number of outstanding
+-- transactions, that is up to the managers and the subordinate.
 -- PIPELINE_IN and PIPELINE_OUT provide the settings for input and ouput
 -- pipelining stages as a timing relaxantion setting.
 -- The inputs are arbitrated in a round-robin fashion for all active data
@@ -59,9 +58,7 @@ use     work.axi4stream.all;
 entity axi4_Mux is
 	generic(
 		PIPELINE_IN            : natural_vector  := (0 => 0);
-		PIPELINE_OUT           : natural   := 0;
-		NUM_OUTSTANDING_READS  : natural   := 0; -- if zero, use full ID width (2**ID)
-		NUM_OUTSTANDING_WRITES : natural   := 0  -- if zero, use full ID width (2**ID)
+		PIPELINE_OUT           : natural   := 0
 	);
 	port (
 		Clock             : in  std_logic;
@@ -108,6 +105,8 @@ begin
 	-- assert In_S2M(In_M2S'low).AWID'length  = Out_S2M.BID'length     report "PoC.axi4_Mux:: Write ID size of in and out not matching!" severity failure;
 	-- assert In_S2M(In_M2S'low).ARID'length  = Out_S2M.RID'length     report "PoC.axi4_Mux:: Read ID size of in and out not matching!" severity failure;
 	assert PIPELINE_IN'length = PORTS                               report "PoC.axi4_Mux:: PIPELINE_IN-Length is not equal to Number Port-Vector!" severity failure;
+	assert Out_AW_ID_BITS >= PORT_BITS + IN_AW_ID_BITS              report "PoC.axi4_Mux:: Output AWID must be log2(ports) bits wider than the input AWID!" severity failure;
+	assert Out_AR_ID_BITS >= PORT_BITS + IN_AR_ID_BITS              report "PoC.axi4_Mux:: Output ARID must be log2(ports) bits wider than the input ARID!" severity failure;
 
 	glue_in_loop_gen : for i in In_M2S'range generate
 		glue_in_gen : if PIPELINE_IN(i) > 0 generate
@@ -157,17 +156,6 @@ begin
 		signal State     : T_STATE := ST_Idle;
 		signal NextState : T_STATE;
 
-		--OoO-Buffer Signals
-		-- Put Port
-		signal Put      : std_logic;
-		signal Full     : std_logic;
-		signal DataIn   : std_logic_vector(PORT_BITS + In_AW_ID_BITS - 1 downto 0);
-		signal IndexOut : unsigned(log2ceilnz(ite(NUM_OUTSTANDING_WRITES = 0, 2**Out_AW_ID_BITS, NUM_OUTSTANDING_WRITES)) - 1 downto 0);
-		-- Get Port
-		signal Got     : std_logic;
-		signal Valid   : std_logic;
-		signal DataOut : std_logic_vector(PORT_BITS + In_AW_ID_BITS - 1 downto 0);
-
 		signal Arbitrate     : std_logic;
 		signal RequestVector : std_logic_vector(PORTS - 1 downto 0);
 		signal Arbitrated    : std_logic;
@@ -176,8 +164,6 @@ begin
 
 		signal RequestWithSelf    : std_logic;
 		signal RequestWithoutSelf : std_logic;
-
-		signal Write_Response_Error : std_logic;
 	begin
 		assign_gen : for i in 0 to PORTS - 1 generate
 			RequestVector(i) <= In_M2S_write(i).AWValid and In_M2S_write(i).WValid;
@@ -197,6 +183,8 @@ begin
 			end if;
 		end process;
 
+		-- One burst at a time on AW and W, as W has no ID to tell bursts apart.
+		-- Write responses are routed by BID independently of that.
 		process(all)
 			variable writeResponseIndex : natural;
 		begin
@@ -206,13 +194,10 @@ begin
 			Out_M2S_write <= Initialize_AXI4_Bus_M2S(Out_M2S.AWAddr'length, Out_M2S.WData'length, Out_M2S.WUser'length, Out_M2S.AWID'length, '0');
 
 			Arbitrate <= '0';
-			Put       <= '0';
-			DataIn    <= (others => '0');
-			Got       <= '0';
 
 			case State is
 				when ST_Idle =>
-					if (RequestWithSelf = '1') and (Full = '0') then
+					if RequestWithSelf = '1' then
 						Arbitrate <= '1';
 						NextState <= ST_Dataflow;
 					end if;
@@ -222,15 +207,14 @@ begin
 					Out_M2S_write      <= IDResize(In_M2S_write(to_integer(GrantIndex)), Out_AW_ID_BITS, Out_AR_ID_BITS);
 					In_S2M_write(to_integer(GrantIndex)) <= IDResize(Out_S2M_write, In_AW_ID_BITS, In_AR_ID_BITS);
 
-					DataIn(In_AW_ID_BITS -1 downto 0)                         <= In_M2S_write(to_integer(GrantIndex)).AWID;
-					DataIn(PORT_BITS + In_AW_ID_BITS -1 downto In_AW_ID_BITS) <= std_logic_vector(GrantIndex);
-
 					if (Out_S2M_write.AWReady and In_M2S_write(to_integer(GrantIndex)).WValid and In_M2S_write(to_integer(GrantIndex)).WLast and Out_S2M_write.WReady) = '1' then --Write Data and Address finished at the same time, AW Valid was set and checked in Idle state
-						Put       <= '1';
-						NextState <= ST_Idle; -- We need always to go to Idle, because we put the data into OoO-buffer in this CC and full is updated in next CC
+						if RequestWithoutSelf = '1' then
+							Arbitrate <= '1';
+						else
+							NextState <= ST_Idle;
+						end if;
 
 					elsif Out_S2M_write.AWReady = '1' then -- We transmitted the Write Address
-						Put       <= '1';
 						NextState <= ST_DataOnly;
 
 					elsif (In_M2S_write(to_integer(GrantIndex)).WValid and In_M2S_write(to_integer(GrantIndex)).WLast and Out_S2M_write.WReady) = '1' then -- We transmitted the Write Data
@@ -244,7 +228,7 @@ begin
 					In_S2M_write(to_integer(GrantIndex)).AWReady <= '0';
 
 					if (In_M2S_write(to_integer(GrantIndex)).WValid and In_M2S_write(to_integer(GrantIndex)).WLast and Out_S2M_write.WReady) = '1' then -- We transmitted the Write Data
-						if (RequestWithoutSelf = '1') and (Full = '0') then -- We have another request that can be processed immediately
+						if RequestWithoutSelf = '1' then -- We have another request that can be processed immediately
 							Arbitrate <= '1';
 							NextState <= ST_Dataflow;
 						else
@@ -258,23 +242,24 @@ begin
 					In_S2M_write(to_integer(GrantIndex)) <= IDResize(Out_S2M_write, In_AW_ID_BITS, In_AR_ID_BITS);
 					In_S2M_write(to_integer(GrantIndex)).WReady <= '0';
 
-					DataIn(In_AW_ID_BITS -1 downto 0)                         <= In_M2S_write(to_integer(GrantIndex)).AWID;
-					DataIn(PORT_BITS + In_AW_ID_BITS -1 downto In_AW_ID_BITS) <= std_logic_vector(GrantIndex);
-
 					if Out_S2M_write.AWReady = '1' then -- We transmitted the Write Address
-						Put       <= '1';
-						NextState <= ST_Idle;
+						if RequestWithoutSelf = '1' then
+							Arbitrate <= '1';
+							NextState <= ST_Dataflow;
+						else
+							NextState <= ST_Idle;
+						end if;
 					end if;
 			end case;
 
-			-- Have AWID always connected to OoO Index
-			Out_M2S_write.AWID <= to_slv(resize(IndexOut, Out_AW_ID_BITS));
+			-- Output AWID is port & input AWID
+			Out_M2S_write.AWID <= std_logic_vector(resize(GrantIndex & unsigned(In_M2S_write(to_integer(GrantIndex)).AWID), Out_AW_ID_BITS));
 
-			-- Handle write response
-			writeResponseIndex := to_integer(unsigned(DataOut(PORT_BITS + In_AW_ID_BITS -1 downto In_AW_ID_BITS)));
+			-- Handle write response, routed by the port bits of BID
+			writeResponseIndex := to_integer(unsigned(Out_S2M_write.BID(PORT_BITS + In_AW_ID_BITS -1 downto In_AW_ID_BITS)));
 
 			for i in 0 to PORTS -1 loop -- Write response data can stay always the same
-				In_S2M_write(i).BID    <= DataOut(In_AW_ID_BITS -1 downto 0);
+				In_S2M_write(i).BID    <= Out_S2M_write.BID(In_AW_ID_BITS -1 downto 0);
 				In_S2M_write(i).BResp  <= Out_S2M_write.BResp;
 				In_S2M_write(i).BUser  <= Out_S2M_write.BUser;
 				In_S2M_write(i).BValid <= '0';
@@ -282,37 +267,10 @@ begin
 
 			Out_M2S_write.BReady <= '0';
 			if writeResponseIndex < PORTS then
-				In_S2M_write(writeResponseIndex).BValid <= Out_S2M_write.BValid and Valid;
+				In_S2M_write(writeResponseIndex).BValid <= Out_S2M_write.BValid;
 				Out_M2S_write.BReady <= In_M2S_write(writeResponseIndex).BReady;
-				Got <= In_M2S_write(writeResponseIndex).BReady and Out_S2M_write.BValid;
 			end if;
 		end process;
-
-		Write_Response_Error <= Got and not Valid when rising_edge(Clock);
-		assert Write_Response_Error = '0' report "PoC.axi4_Mux:: Got write response but no matching index!" severity warning;
-
-		Write_idx : entity work.dstruct_OutOfOrderBuffer
-		generic map(
-			DATA_BITS => PORT_BITS + In_AW_ID_BITS,
-			NUM_INDEX => ite(NUM_OUTSTANDING_WRITES = 0, 2**Out_AW_ID_BITS, NUM_OUTSTANDING_WRITES)
-		)
-		port map(
-			-- INPUTS
-			Clock => Clock,
-			Reset => Reset,
-
-			-- Put Port
-			Put      => Put,
-			Full     => Full,
-			DataIn   => DataIn,
-			IndexOut => IndexOut,
-
-			-- Get Port
-			Got      => Got,
-			Valid    => Valid,
-			IndexIn  => resize(unsigned(Out_S2M_write.BID), IndexOut'length),
-			DataOut  => DataOut
-		);
 
 		Arbiter : entity work.bus_Arbiter
 		generic map(
@@ -367,18 +325,12 @@ begin
 		signal Mux_Out_M2S : T_AXI4Stream_M2S(Data(isum(FORWARD_BIT_VEC) - 1 downto 0), Keep(0 downto 0), User(0 downto 0), ID(0 downto 0), Dest(0 downto 0));
 		signal Mux_Out_S2M : T_AXI4Stream_S2M(User(0 downto 0));
 
-		--Index Signals
-		-- Put Port
-		signal Put      : std_logic;
-		signal Full     : std_logic;
-		signal DataIn   : std_logic_vector(PORT_BITS + In_AR_ID_BITS - 1 downto 0);
-		signal IndexOut : unsigned(log2ceilnz(ite(NUM_OUTSTANDING_READS = 0, 2**Out_AR_ID_BITS, NUM_OUTSTANDING_READS)) - 1 downto 0);
-		-- Get Port
-		signal Got     : std_logic;
-		signal Valid   : std_logic;
-		signal DataOut : std_logic_vector(PORT_BITS + In_AR_ID_BITS - 1 downto 0);
+		-- Port of the read response, from the port bits of RID
+		signal ResponsePort : unsigned(PORT_BITS - 1 downto 0);
 
 	begin
+		ResponsePort <= unsigned(Out_S2M_read.RID(PORT_BITS + In_AR_ID_BITS - 1 downto In_AR_ID_BITS));
+
 		assign_gen : for i in 0 to PORTS - 1 generate
 
 			signal ForwardDataIn : std_logic_vector(isum(FORWARD_BIT_VEC) - 1 downto 0);
@@ -402,7 +354,8 @@ begin
 			ForwardDataIn(high(FORWARD_BIT_VEC, AR_Len_POS    ) downto low(FORWARD_BIT_VEC, AR_Len_POS    )) <= In_M2S_read(i).ARLen;
 			ForwardDataIn(high(FORWARD_BIT_VEC, AR_Size_POS   ) downto low(FORWARD_BIT_VEC, AR_Size_POS   )) <= In_M2S_read(i).ARSize;
 			ForwardDataIn(high(FORWARD_BIT_VEC, AR_Burst_POS  ) downto low(FORWARD_BIT_VEC, AR_Burst_POS  )) <= In_M2S_read(i).ARBurst;
-			ForwardDataIn(high(FORWARD_BIT_VEC, AR_ID_POS     ) downto low(FORWARD_BIT_VEC, AR_ID_POS     )) <= resize(std_logic_vector(IndexOut), Out_AR_ID_BITS);
+			-- Output ARID is port & input ARID
+			ForwardDataIn(high(FORWARD_BIT_VEC, AR_ID_POS     ) downto low(FORWARD_BIT_VEC, AR_ID_POS     )) <= std_logic_vector(resize(to_unsigned(i, PORT_BITS) & unsigned(In_M2S_read(i).ARID), Out_AR_ID_BITS));
 			ForwardDataIn(high(FORWARD_BIT_VEC, AR_User_POS   ) downto low(FORWARD_BIT_VEC, AR_User_POS   )) <= In_M2S_read(i).ARUser;
 			ForwardDataIn(high(FORWARD_BIT_VEC, AR_Cache_POS  ) downto low(FORWARD_BIT_VEC, AR_Cache_POS  )) <= In_M2S_read(i).ARCache;
 			ForwardDataIn(high(FORWARD_BIT_VEC, AR_Protect_POS) downto low(FORWARD_BIT_VEC, AR_Protect_POS)) <= In_M2S_read(i).ARProt;
@@ -412,9 +365,9 @@ begin
 
 			Mux_In_M2S(i).Data <= ForwardDataIn;
 
-			In_S2M_read(i).ARReady <= Mux_Ready and not Full;
+			In_S2M_read(i).ARReady <= Mux_Ready;
 
-			Mux_Valid <= In_M2S_read(i).ARValid and not Full;
+			Mux_Valid <= In_M2S_read(i).ARValid;
 			-- Mux_SoF   <= '1';
 			Mux_Last  <= '1';
 
@@ -422,13 +375,12 @@ begin
 			In_S2M_read(i).RData  <= Out_S2M_read.RData;
 			In_S2M_read(i).RResp  <= Out_S2M_read.RResp;
 			In_S2M_read(i).RUser  <= Out_S2M_read.RUser;
-			In_S2M_read(i).RID    <= DataOut(In_AR_ID_BITS - 1 downto 0);
-			In_S2M_read(i).RValid <= Out_S2M_read.RValid and Valid and to_sl(unsigned(DataOut(PORT_BITS + In_AR_ID_BITS - 1 downto In_AR_ID_BITS)) = i);
+			In_S2M_read(i).RID    <= Out_S2M_read.RID(In_AR_ID_BITS - 1 downto 0);
+			In_S2M_read(i).RValid <= Out_S2M_read.RValid and to_sl(ResponsePort = i);
 
 		end generate;
 
 		process(all)
-			variable readResponseIndex : natural;
 		begin
 			-- Address Read assignment
 			Out_M2S_read.ARValid  <= Mux_Out_M2S.Valid;
@@ -444,54 +396,13 @@ begin
 			Out_M2S_read.ARQoS    <= Mux_Out_M2S.Data(high(FORWARD_BIT_VEC, AR_QoS_POS    ) downto low(FORWARD_BIT_VEC, AR_QoS_POS    ));
 			Out_M2S_read.ARRegion <= Mux_Out_M2S.Data(high(FORWARD_BIT_VEC, AR_Region_POS ) downto low(FORWARD_BIT_VEC, AR_Region_POS ));
 
-			-- Read response ready
-			readResponseIndex := to_integer(unsigned(DataOut(PORT_BITS + In_AR_ID_BITS - 1 downto In_AR_ID_BITS)));
-			if readResponseIndex < PORTS then
-				Out_M2S_read.RReady <= In_M2S_read(readResponseIndex).RReady and Valid;
-				Got                 <= In_M2S_read(readResponseIndex).RReady and Valid and Out_S2M_read.RValid and Out_S2M_read.RLast;
+			-- Read response ready, from the port of RID
+			if to_integer(ResponsePort) < PORTS then
+				Out_M2S_read.RReady <= In_M2S_read(to_integer(ResponsePort)).RReady;
 			else
 				Out_M2S_read.RReady <= '0';
-				Got                 <= '0';
 			end if;
 		end process;
-
-		process (all)
-		begin
-			Put    <= '0';
-			DataIn <= (others => '0');
-
-			for i in 0 to PORTS - 1 loop
-				if (Mux_In_M2S(i).Valid and Mux_In_S2M(i).Ready) = '1' and Full = '0' then
-
-					DataIn(In_AR_ID_BITS - 1 downto 0)                         <= In_M2S_read(i).ARID;-- ID
-					DataIn(PORT_BITS + In_AR_ID_BITS - 1 downto In_AR_ID_BITS) <= std_logic_vector(to_unsigned(i, PORT_BITS));-- Port
-					Put                                                        <= '1';
-				end if;
-			end loop;
-		end process;
-
-		Read_idx : entity work.dstruct_OutOfOrderBuffer
-		generic map(
-			DATA_BITS => PORT_BITS + In_AR_ID_BITS,
-			NUM_INDEX => ite(NUM_OUTSTANDING_READS = 0, 2**Out_AR_ID_BITS, NUM_OUTSTANDING_READS)
-		)
-		port map(
-			-- INPUTS
-			Clock => Clock,
-			Reset => Reset,
-
-			-- Put Port
-			Put      => Put,
-			Full     => Full,
-			DataIn   => DataIn,
-			IndexOut => IndexOut,
-
-			-- Get Port
-			Got      => Got,
-			Valid    => Valid,
-			IndexIn  => resize(unsigned(Out_S2M_read.RID), IndexOut'length),
-			DataOut  => DataOut
-		);
 
 		Read_mux : entity work.axi4stream_Mux
 		generic map(

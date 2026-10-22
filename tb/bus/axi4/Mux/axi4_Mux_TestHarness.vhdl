@@ -79,7 +79,7 @@ architecture Harness of axi4_Mux_TestHarness is
 			ADDRESS_BITS => AXI_ADDR_WIDTH,
 			DATA_BITS    => AXI_DATA_WIDTH,
 			USER_BITS    => 1,
-			ID_BITS      => 4
+			ID_BITS      => 6 -- port ( 3 bit ) & input ID ( 3 bit )
 		);
 
 	signal AXI4_Manager_Transaction : AddressBusRecArrayType(0 to PORTS - 1)(
@@ -189,27 +189,27 @@ begin
 		signal AxiBus : Axi4RecType(
 			WriteAddress(
 				Addr(AXI_ADDR_WIDTH - 1 downto 0),
-				ID(3 downto 0),
+				ID(5 downto 0),
 				User(0 downto 0)
 			),
 			WriteData (
 				Data(AXI_DATA_WIDTH - 1 downto 0),
 				Strb(AXI_STRB_WIDTH - 1 downto 0),
 				User(0 downto 0),
-				ID(3 downto 0)
+				ID(5 downto 0)
 			),
 			WriteResponse(
-				ID(3 downto 0),
+				ID(5 downto 0),
 				User(0 downto 0)
 			),
 			ReadAddress (
 				Addr(AXI_ADDR_WIDTH - 1 downto 0),
-				ID(3 downto 0),
+				ID(5 downto 0),
 				User(0 downto 0)
 			),
 			ReadData (
 				Data(AXI_DATA_WIDTH - 1 downto 0),
-				ID(3 downto 0),
+				ID(5 downto 0),
 				User(0 downto 0)
 			)
 		);
@@ -235,9 +235,7 @@ begin
 	DUT : entity PoC.axi4_Mux
 	generic map(
 		PIPELINE_IN => (In_M2S'range => 0),
-		PIPELINE_OUT => 0,
-		NUM_OUTSTANDING_READS  => TRANSACTIONS,
-		NUM_OUTSTANDING_WRITES => TRANSACTIONS
+		PIPELINE_OUT => 0
 	)
 	port map
 	(
